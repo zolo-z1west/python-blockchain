@@ -1,69 +1,81 @@
-import hashlib
 import json
-from time import time #timestamp recording
+import requests
+from _sha256 import sha256
+from time import time
+from typing import Optional
+from urllib.parse import urlparse
+
+
+FORGE_TRIGGER = 1
+
 
 class Blockchain:
     def __init__(self):
-        self.current_transactions = [] 
-        self.chain = []
-        self.nodes = set()
-        self.new_block(previous_hash=1, proof=100) #loop genesis block creation
+        self.authority = None
+        self.blocs = []
+        self.peers = set()
+        self.mempool = []
 
-    def new_block(self, proof, previous_hash=None):
-        """
-        Create a new Block in the Blockchain
+        self.forge(prev_hash='genesis', curr_hash=None)
 
-        :param proof: The proof given by the Proof of Work algorithm
-        :param previous_hash: Hash of previous Block
-        :return: New Block
-        """
-        block = {
-            'index': len(self.chain) + 1,
-            'timestamp': time(),
-            'transactions': self.current_transactions,
-            'proof': proof,
-            'previous_hash': previous_hash or self.hash(self.chain[-1]),
+    def forge(self, prev_hash: Optional[str], curr_hash: Optional[str]):
+        # noinspection PyDictCreation
+        bloc = {
+            'previous_hash': prev_hash or self.previous_block['current_hash'],
+            'current_hash': '',
+            'timestamp': int(time()),
+            'transactions': self.mempool[:]
         }
-        self.current_transactions = []
-        self.chain.append(block)
-        return block
-    #work for 11/09/25
-    def new_transaction(self, sender, recipient, amount):
-        """
-        Creates a new transaction to go into the next mined Block
 
-        :param sender: Address of the Sender
-        :param recipient: Address of the Recipient
-        :param amount: Amount
-        :return: The index of the Block that will hold this transaction
-        """
-        self.current_transactions.append({
+        bloc['current_hash'] = curr_hash or self.hash(bloc)
+
+        self.blocs.append(bloc)
+
+    def new_transaction(self, sender: str, content: dict):
+        if self.authority is not None:
+            requests.post(
+                f'http://{self.authority}/transaction/create',
+                json=content
+            )
+            return
+
+        self.mempool.append({
             'sender': sender,
-            'recipient': recipient,
-            'amount': amount,
+            'content': content
         })
 
-        return self.last_block['index'] + 1
+        if len(self.mempool) == FORGE_TRIGGER:
+            self.forge(prev_hash=None, curr_hash=None)
+            self.mempool.clear()
 
-    #re-hashing (reminder :- make method for it later)
-    @staticmethod
-    def hash(block):
-        """
-        Creates a SHA-256 hash of a Block
+    def register(self, address: str):
+        parsed_url = urlparse(address)
+        self.peers.add(parsed_url.path)
 
-        :param block: Block
-        """
-        pass
+    def sync(self) -> bool:
+        changed = False
+
+        for peer in self.peers:
+            r = requests.get(f'http://{peer}/')
+
+            if r.status_code != 200:
+                continue
+
+            chain = r.json()['chain']
+            if len(chain) > len(self.blocs):
+                self.blocs = chain
+                changed = True
+
+        return changed
 
     @property
-    def last_block(self):
-        """
-        Returns the last Block in the chain
-        """
-        pass
+    def previous_block(self) -> dict:
+        return self.blocs[-1]
 
-#left to define proof_of_work, valid_proof, valid_chain, and conflict resolution method
-#define api to p2p net bw nodes 
-#implement proof validation method
-#route mine methods to flask ka api calls
-#create backend routes 
+    @staticmethod
+    def hash(block: dict):
+        to_hash = json.dumps(block)
+        return sha256(to_hash.encode()).hexdigest()
+
+    def set_authority(self, address: str):
+        self.authority = address
